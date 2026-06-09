@@ -1,8 +1,8 @@
 #include "imgui-SFML.h"
 #include "imgui.h"
+#include "object_detector.h"
 
 #include <SFML/Graphics.hpp>
-#include <opencv2/opencv.hpp>
 
 sf::Texture matToTexture(const cv::Mat &frame) {
   cv::Mat rgb;
@@ -14,7 +14,15 @@ sf::Texture matToTexture(const cv::Mat &frame) {
   return texture;
 }
 
+void showFPS();
+
 int main() {
+
+  ObjectDetector det;
+
+  det.useCuda = false;
+  det.init();
+
   sf::RenderWindow window(sf::VideoMode::getDesktopMode(),
                           "traffic Surveillance");
 
@@ -30,8 +38,7 @@ int main() {
   sf::Clock deltaClock;
 
   // capture video
-  cv::VideoCapture cap(DATA_PATH "demo1.mp4");
-  cv::VideoCapture cap2(DATA_PATH "demo2.mp4");
+  cv::VideoCapture cap(DATA_PATH "demo1.mp4", cv::CAP_GSTREAMER);
 
   cv::Mat frame;
 
@@ -43,6 +50,12 @@ int main() {
       cap.set(cv::CAP_PROP_POS_FRAMES, 0);
       continue;
     }
+
+    std::vector<Object> objects;
+
+    det.detect(frame, objects);
+
+    // std::cout << "objects: " << objects.size() << std::endl;
 
     sf::Texture tex = matToTexture(frame);
 
@@ -66,10 +79,12 @@ int main() {
     if (ImGui::Begin("Main window", nullptr,
                      ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoTitleBar)) {
 
-      ImGui::Image(tex, sf::Vector2f(300, 200));
+      ImGui::Image(tex);
     }
 
     ImGui::End();
+
+    showFPS();
 
     window.clear();
 
@@ -80,4 +95,17 @@ int main() {
   ImGui::SFML::Shutdown();
 
   return 0;
+}
+
+void showFPS() {
+  ImGuiViewport *v = ImGui::GetMainViewport();
+  // sf::Vector2u size = window.getSize();
+  // ImGui::SetNextWindowSize(ImVec2(size.x, size.y), ImGuiCond_Always);
+  ImGui::SetNextWindowPos(ImVec2(v->Size.x - 100.0f, 0), ImGuiCond_Always);
+
+  ImGui::Begin("FPS", nullptr,
+               ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoResize);
+  ImGui::Text("%.1f FPS", ImGui::GetIO().Framerate);
+  ImGui::Text("%.3f MS", 1000.0f / ImGui::GetIO().Framerate);
+  ImGui::End();
 }
