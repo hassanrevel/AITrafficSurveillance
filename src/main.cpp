@@ -21,6 +21,7 @@ int main() {
   ObjectDetector det;
 
   det.useCuda = false;
+  det.model = Model::XL;
   det.init();
 
   sf::RenderWindow window(sf::VideoMode::getDesktopMode(),

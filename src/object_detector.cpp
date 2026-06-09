@@ -13,27 +13,84 @@ void ObjectDetector::init() {
 
 void ObjectDetector::load_net() {
 
-  auto result = cv::dnn::readNetFromONNX(DATA_PATH "yolo11n.onnx");
   if (useCuda) {
+    std::cout << "Using Cuda" << std::endl;
+    auto result = loadCudeModel();
+
     result.setPreferableBackend(cv::dnn::DNN_BACKEND_CUDA);
     result.setPreferableTarget(cv::dnn::DNN_TARGET_CUDA);
+
     net = result;
   } else {
-
+    std::cout << "Using vulkan" << std::endl;
     ncnnNet.opt.use_vulkan_compute = true;
-
-    ncnnNet.load_param(DATA_PATH "yolo11s_ncnn_model/model.ncnn.param");
-    ncnnNet.load_model(DATA_PATH "yolo11s_ncnn_model/model.ncnn.bin");
+    loadNcnnModel();
   }
 }
 
-static void generate_proposal(const ncnn::Mat &pred, int stride,
-                              const ncnn::Mat &in_pad, float prob_threshold,
-                              std::vector<Object> objects);
+cv::dnn::Net ObjectDetector::loadCudeModel() {
+  switch (model) {
+  case Model::XS:
+    std::cout << "yolo11 extra small model" << std::endl;
+    return cv::dnn::readNetFromONNX(DATA_PATH "yolo_onnx_models/yolo11n.onnx");
+  case Model::SM:
+    std::cout << "yolo11 small model" << std::endl;
+    return cv::dnn::readNetFromONNX(DATA_PATH "yolo_onnx_models/yolo11s.onnx");
+  case Model::MD:
+    std::cout << "yolo11 medium model" << std::endl;
+    return cv::dnn::readNetFromONNX(DATA_PATH "yolo_onnx_models/yolo11m.onnx");
+  case Model::LG:
+    std::cout << "yolo11 large model" << std::endl;
+    return cv::dnn::readNetFromONNX(DATA_PATH "yolo_onnx_models/yolo11l.onnx");
+  case Model::XL:
+    std::cout << "yolo11 extra large model" << std::endl;
+    return cv::dnn::readNetFromONNX(DATA_PATH "yolo_onnx_models/yolo11x.onnx");
+  }
 
-static void generate_proposal(const ncnn::Mat &pred, std::vector<int> &strides,
-                              const ncnn::Mat &in_pad, float prob_threshold,
-                              std::vector<Object> &objects);
+  assert(false);
+}
+
+void ObjectDetector::loadNcnnModel() {
+  switch (model) {
+  case Model::XS:
+    std::cout << "yolo11 extra small model" << std::endl;
+    ncnnNet.load_param(DATA_PATH
+                       "yolo_ncnn_models/yolo11n_ncnn_model/model.ncnn.param");
+    ncnnNet.load_model(DATA_PATH
+                       "yolo_ncnn_models/yolo11n_ncnn_model/model.ncnn.bin");
+    return;
+  case Model::SM:
+    std::cout << "yolo11 small model" << std::endl;
+    ncnnNet.load_param(DATA_PATH
+                       "yolo_ncnn_models/yolo11s_ncnn_model/model.ncnn.param");
+    ncnnNet.load_model(DATA_PATH
+                       "yolo_ncnn_models/yolo11s_ncnn_model/model.ncnn.bin");
+    return;
+  case Model::MD:
+    std::cout << "yolo11 medium model" << std::endl;
+    ncnnNet.load_param(DATA_PATH
+                       "yolo_ncnn_models/yolo11m_ncnn_model/model.ncnn.param");
+    ncnnNet.load_model(DATA_PATH
+                       "yolo_ncnn_models/yolo11m_ncnn_model/model.ncnn.bin");
+    return;
+  case Model::LG:
+    std::cout << "yolo11 large model" << std::endl;
+    ncnnNet.load_param(DATA_PATH
+                       "yolo_ncnn_models/yolo11l_ncnn_model/model.ncnn.param");
+    ncnnNet.load_model(DATA_PATH
+                       "yolo_ncnn_models/yolo11l_ncnn_model/model.ncnn.bin");
+    return;
+  case Model::XL:
+    std::cout << "yolo11 extra large model" << std::endl;
+    ncnnNet.load_param(DATA_PATH
+                       "yolo_ncnn_models/yolo11x_ncnn_model/model.ncnn.param");
+    ncnnNet.load_model(DATA_PATH
+                       "yolo_ncnn_models/yolo11x_ncnn_model/model.ncnn.bin");
+    return;
+  }
+
+  assert(false);
+}
 
 cv::Mat format_yolov(const cv::Mat &source) {
   int col = source.cols;
@@ -188,9 +245,10 @@ std::vector<std::string> ObjectDetector::load_class_list() {
   return coco_list;
 }
 
-static void generate_proposal(const ncnn::Mat &pred, int stride,
-                              const ncnn::Mat &in_pad, float prob_threshold,
-                              std::vector<Object> objects) {
+void ObjectDetector::generate_proposal(const ncnn::Mat &pred, int stride,
+                                       const ncnn::Mat &in_pad,
+                                       float prob_threshold,
+                                       std::vector<Object> objects) {
   const int w = in_pad.w;
   const int h = in_pad.h;
 
@@ -280,9 +338,11 @@ static void generate_proposal(const ncnn::Mat &pred, int stride,
   }
 }
 
-static void generate_proposal(const ncnn::Mat &pred, std::vector<int> &strides,
-                              const ncnn::Mat &in_pad, float prob_threshold,
-                              std::vector<Object> &objects) {
+void ObjectDetector::generate_proposal(const ncnn::Mat &pred,
+                                       std::vector<int> &strides,
+                                       const ncnn::Mat &in_pad,
+                                       float prob_threshold,
+                                       std::vector<Object> &objects) {
   const int w = in_pad.w;
   const int h = in_pad.h;
 
