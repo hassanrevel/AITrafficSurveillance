@@ -4,12 +4,43 @@
 #include <string.h>
 #include <utility>
 
+const int target_size = 640;
+const float SCORE_THRESHOLD = 0.5f;
+const float NMS_THRESHOLD = 0.45f;
+
+static const char *class_names[] = {
+    "person",        "bicycle",      "car",
+    "motorcycle",    "airplane",     "bus",
+    "train",         "truck",        "boat",
+    "traffic light", "fire hydrant", "stop sign",
+    "parking meter", "bench",        "bird",
+    "cat",           "dog",          "horse",
+    "sheep",         "cow",          "elephant",
+    "bear",          "zebra",        "giraffe",
+    "backpack",      "umbrella",     "handbag",
+    "tie",           "suitcase",     "frisbee",
+    "skis",          "snowboard",    "sports ball",
+    "kite",          "baseball bat", "baseball glove",
+    "skateboard",    "surfboard",    "tennis racket",
+    "bottle",        "wine glass",   "cup",
+    "fork",          "knife",        "spoon",
+    "bowl",          "banana",       "apple",
+    "sandwich",      "orange",       "broccoli",
+    "carrot",        "hot dog",      "pizza",
+    "donut",         "cake",         "chair",
+    "couch",         "potted plant", "bed",
+    "dining table",  "toilet",       "tv",
+    "laptop",        "mouse",        "remote",
+    "keyboard",      "cell phone",   "microwave",
+    "oven",          "toaster",      "sink",
+    "refrigerator",  "book",         "clock",
+    "vase",          "scissors",     "teddy bear",
+    "hair drier",    "toothbrush",
+};
+
 static inline float sigmoid(float x) { return 1.0f / (1.0f + expf(-x)); }
 
-void ObjectDetector::init() {
-  coco_list = load_class_list();
-  load_net();
-}
+void ObjectDetector::init() { load_net(); }
 
 void ObjectDetector::load_net() {
 
@@ -21,6 +52,8 @@ void ObjectDetector::load_net() {
     result.setPreferableTarget(cv::dnn::DNN_TARGET_CUDA);
 
     net = result;
+
+    coco_list = load_class_list();
   } else {
     std::cout << "Using vulkan" << std::endl;
     ncnnNet.opt.use_vulkan_compute = true;
@@ -153,9 +186,6 @@ static void nms_sorted_bboxes(const std::vector<Object> &objects,
 
 void ObjectDetector::detectViaNcnn(cv::Mat &image,
                                    std::vector<Object> &objects) {
-  const int target_size = 640;
-  const float prob_threshold = 0.25f;
-  const float nms_threshold = 0.45f;
 
   int img_w = image.cols;
   int img_h = image.rows;
@@ -205,19 +235,19 @@ void ObjectDetector::detectViaNcnn(cv::Mat &image,
       }
     }
 
-    if (score < prob_threshold)
+    if (score < SCORE_THRESHOLD)
       continue;
 
     // scale box back to original image coordinates
     float x0 = (cx - bw * 0.5f - wpad / 2.0f) / scale;
-    float y0 = (cy - bh * 0.5f - wpad / 2.0f) / scale;
+    float y0 = (cy - bh * 0.5f - hpad / 2.0f) / scale;
     float x1 = (cx + bw * 0.5f - wpad / 2.0f) / scale;
-    float y1 = (cy + bh * 0.5f - wpad / 2.0f) / scale;
+    float y1 = (cy + bh * 0.5f - hpad / 2.0f) / scale;
 
     x0 = std::max(0.f, x0);
     y0 = std::max(0.f, y0);
-    x1 = std::max((float)img_w, x1);
-    y1 = std::max((float)img_h, y1);
+    x1 = std::min((float)img_w, x1);
+    y1 = std::min((float)img_h, y1);
 
     Object obj;
     obj.rect = cv::Rect_<float>(x0, y0, x1 - x0, y1 - y0);
@@ -230,7 +260,7 @@ void ObjectDetector::detectViaNcnn(cv::Mat &image,
             [](const Object &a, const Object &b) { return a.prob > b.prob; });
 
   std::vector<int> picked;
-  nms_sorted_bboxes(proposals, picked, nms_threshold);
+  nms_sorted_bboxes(proposals, picked, NMS_THRESHOLD);
 
   objects.resize(picked.size());
   for (int i = 0; i < (int)picked.size(); i++)
@@ -239,35 +269,6 @@ void ObjectDetector::detectViaNcnn(cv::Mat &image,
 
 void ObjectDetector::draw_object(cv::Mat &image, std::vector<Object> &objects) {
   static const std::vector<int> vehicle_classes = {2, 3, 5, 7};
-  static const char *class_names[] = {
-      "person",        "bicycle",      "car",
-      "motorcycle",    "airplane",     "bus",
-      "train",         "truck",        "boat",
-      "traffic light", "fire hydrant", "stop sign",
-      "parking meter", "bench",        "bird",
-      "cat",           "dog",          "horse",
-      "sheep",         "cow",          "elephant",
-      "bear",          "zebra",        "giraffe",
-      "backpack",      "umbrella",     "handbag",
-      "tie",           "suitcase",     "frisbee",
-      "skis",          "snowboard",    "sports ball",
-      "kite",          "baseball bat", "baseball glove",
-      "skateboard",    "surfboard",    "tennis racket",
-      "bottle",        "wine glass",   "cup",
-      "fork",          "knife",        "spoon",
-      "bowl",          "banana",       "apple",
-      "sandwich",      "orange",       "broccoli",
-      "carrot",        "hot dog",      "pizza",
-      "donut",         "cake",         "chair",
-      "couch",         "potted plant", "bed",
-      "dining table",  "toilet",       "tv",
-      "laptop",        "mouse",        "remote",
-      "keyboard",      "cell phone",   "microwave",
-      "oven",          "toaster",      "sink",
-      "refrigerator",  "book",         "clock",
-      "vase",          "scissors",     "teddy bear",
-      "hair drier",    "toothbrush",
-  };
 
   std::map<int, cv::Scalar> colors = {
       {2, cv::Scalar(0, 255, 0)},
@@ -305,70 +306,81 @@ void ObjectDetector::draw_object(cv::Mat &image, std::vector<Object> &objects) {
 
 void ObjectDetector::detectViaCuda(cv::Mat &image,
                                    std::vector<Object> &objects) {
-  cv::Mat input_image = format_yolov(image);
+  int img_w = image.cols;
+  int img_h = image.rows;
+
+  float scale =
+      std::min((float)target_size / img_w, (float)target_size / img_h);
+  int w = img_w * scale;
+  int h = img_h * scale;
+  int wpad = target_size - w;
+  int hpad = target_size - h;
+
+  cv::Mat resized, padded;
+  cv::resize(image, resized, cv::Size(w, h));
+  cv::copyMakeBorder(resized, padded, hpad / 2, hpad - hpad / 2, wpad / 2,
+                     wpad - wpad / 2, cv::BORDER_CONSTANT,
+                     cv::Scalar(114, 114, 114));
+
   cv::Mat blob;
-
-  cv::Size modelShape(640, 640);
-
-  cv::dnn::blobFromImage(input_image, blob, 1. / 255, modelShape, cv::Scalar(),
-                         true, false);
+  cv::dnn::blobFromImage(padded, blob, 1.0f / 255.0f,
+                         cv::Size(target_size, target_size), cv::Scalar(), true,
+                         false);
   net.setInput(blob);
   std::vector<cv::Mat> outputs;
   net.forward(outputs, net.getUnconnectedOutLayersNames());
 
-  float x_factor = input_image.cols / (float)modelShape.width;
-  float y_factor = input_image.rows / (float)modelShape.height;
+  cv::Mat pred = outputs[0].reshape(1, 84);
+  cv::transpose(pred, pred);
 
-  float *data = (float *)outputs[0].data;
-  //
-  // const int dimension = 85;
-  // const int rows = 25200;
-  //
-  // std::vector<int> class_ids;
-  // std::vector<float> confidences;
-  // std::vector<cv::Rect> boxes;
-  //
-  // return;
-  //
-  // for (int i = 0; i < rows; i++) {
-  //
-  //   float confidence = data[4];
-  //
-  //   if (confidence >= SCORE_THRESHOLD) {
-  //
-  //     float *classes_scores = data + 5;
-  //     cv::Mat scores(1, coco_list.size(), CV_32FC1, classes_scores);
-  //
-  //     cv::Point class_id;
-  //     double max_class_score;
-  //     cv::minMaxLoc(scores, 0, &max_class_score, 0, &class_id);
-  //
-  //     if (max_class_score > SCORE_THRESHOLD) {
-  //       confidences.push_back(confidence);
-  //       class_ids.push_back(class_id.x);
-  //
-  //       float x = data[0];
-  //       float y = data[1];
-  //       float w = data[2];
-  //       float h = data[2];
-  //
-  //       int left = int((x - 0.5 * w) * x_factor);
-  //       int right = int((y - 0.5 * h) * y_factor);
-  //       int width = int(w * x_factor);
-  //       int height = int(h * y_factor);
-  //
-  //       boxes.push_back(cv::Rect(left, right, width, height));
-  //     }
-  //   }
-  //
-  //   data += dimension;
-  // }
+  float *data = (float *)pred.data;
+  std::vector<Object> proposals;
 
-  // result
-  // std::vector<int> nms_result;
-  // cv::dnn::NMSBoxes(boxes, confidences, SCORE_THRESHOLD, NMS_THRESHOLD,
-  //                   nms_result);
-  // std::cout << nms_result.size() << std::endl;
+  for (int i = 0; i < 8400; i++) {
+    float cx = data[0];
+    float cy = data[1];
+    float bw = data[2];
+    float bh = data[3];
+
+    float *class_scores = data + 4;
+    cv::Mat scores(1, 80, CV_32FC1, class_scores);
+    cv::Point class_id;
+    double max_score;
+    cv::minMaxLoc(scores, 0, &max_score, 0, &class_id);
+
+    if (max_score < SCORE_THRESHOLD) {
+      data += 84;
+      continue;
+    }
+
+    float x0 = (cx - bw * 0.5f - wpad / 2.0) / scale;
+    float y0 = (cy - bh * 0.5f - hpad / 2.0) / scale;
+    float x1 = (cx + bw * 0.5f - wpad / 2.0) / scale;
+    float y1 = (cy + bh * 0.5f - hpad / 2.0) / scale;
+
+    x0 = std::max(0.0f, x0);
+    y0 = std::max(0.0f, y0);
+    x1 = std::min((float)img_w, x1);
+    y1 = std::min((float)img_h, y1);
+
+    Object obj;
+    obj.rect = cv::Rect_<float>(x0, y0, x1 - x0, y1 - y0);
+    obj.label = class_id.x;
+    obj.prob = (float)max_score;
+    proposals.push_back(obj);
+
+    data += 84;
+  }
+
+  std::sort(proposals.begin(), proposals.end(),
+            [](const Object &a, const Object &b) { return a.prob > b.prob; });
+
+  std::vector<int> picked;
+  nms_sorted_bboxes(proposals, picked, NMS_THRESHOLD);
+
+  objects.resize(picked.size());
+  for (int i = 0; i < (int)picked.size(); i++)
+    objects[i] = proposals[picked[i]];
 }
 
 std::vector<std::string> ObjectDetector::load_class_list() {

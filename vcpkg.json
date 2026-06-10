@@ -2,6 +2,7 @@
   "name": "mai",
   "version": "0.1.0",
   "dependencies": [
+			"sfml",
 			{
 					"name" : "ncnn",
 					"features": ["vulkan"]
