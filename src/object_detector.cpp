@@ -110,6 +110,47 @@ void ObjectDetector::detect(cv::Mat &image, std::vector<Object> &objects) {
     detectViaNcnn(image, objects);
 }
 
+static void nms_sorted_bboxes(const std::vector<Object> &objects,
+                              std::vector<int> &picked, float nms_threshold) {
+  picked.clear();
+  const int n = objects.size();
+  std::vector<float> areas(n);
+
+  for (int i = 0; i < n; i++)
+    areas[i] = objects[i].rect.width * objects[i].rect.height;
+
+  for (int i = 0; i < n; i++) {
+    const Object &a = objects[i];
+    bool keep = true;
+
+    for (int j = 0; j < (int)picked.size(); j++) {
+      const Object &b = objects[picked[j]];
+
+      // intersection
+      float inter_x0 = std::max(a.rect.x, b.rect.x);
+      float inter_y0 = std::max(a.rect.y, b.rect.y);
+      float inter_x1 =
+          std::min(a.rect.x + a.rect.width, b.rect.x + b.rect.width);
+      float inter_y1 =
+          std::min(a.rect.y + a.rect.height, b.rect.y + b.rect.height);
+
+      float inter_w = std::max(0.0f, inter_x1 - inter_x0);
+      float inter_h = std::max(0.0f, inter_y1 - inter_y0);
+      float inter_area = inter_w * inter_h;
+
+      float iou = inter_area / (areas[i] + areas[picked[j]] - inter_area);
+
+      if (iou > nms_threshold) {
+        keep = false;
+        break;
+      }
+    }
+
+    if (keep)
+      picked.push_back(i);
+  }
+}
+
 void ObjectDetector::detectViaNcnn(cv::Mat &image,
                                    std::vector<Object> &objects) {
   const int target_size = 640;
@@ -119,31 +160,18 @@ void ObjectDetector::detectViaNcnn(cv::Mat &image,
   int img_w = image.cols;
   int img_h = image.rows;
 
-  std::vector<int> strides(3);
-  strides[0] = 8;
-  strides[1] = 16;
-  strides[2] = 32;
-  const int max_stride = 32;
-
-  int w = img_w;
-  int h = img_h;
-  float scale = 1.f;
-
-  if (w > h) {
-    scale = (float)target_size / w;
-    w = target_size;
-    h = h * scale;
-  } else {
-    scale = (float)target_size / h;
-    h = target_size;
-    w = w * scale;
-  }
+  int w = img_w, h = img_h;
+  float scale = std::min((float)target_size / w, (float)target_size / h);
+  w = w * scale;
+  h = h * scale;
 
   ncnn::Mat in = ncnn::Mat::from_pixels_resize(
       image.data, ncnn::Mat::PIXEL_BGR2RGB, img_w, img_h, w, h);
 
-  int wpad = (w + max_stride - 1) / max_stride * max_stride - w;
-  int hpad = (h + max_stride - 1) / max_stride * max_stride - h;
+  // letter boxing padding to 640x640
+  int wpad = target_size - w;
+  int hpad = target_size - h;
+
   ncnn::Mat in_pad;
   ncnn::copy_make_border(in, in_pad, hpad / 2, hpad - hpad / 2, wpad / 2,
                          wpad - wpad / 2, ncnn::BORDER_CONSTANT, 114.f);
@@ -151,6 +179,7 @@ void ObjectDetector::detectViaNcnn(cv::Mat &image,
   const float norm_vals[3] = {1 / 255.0f, 1 / 255.0f, 1 / 255.0f};
   in_pad.substract_mean_normalize(0, norm_vals);
 
+  // inference
   ncnn::Extractor ex = ncnnNet.create_extractor();
   ex.input("in0", in_pad);
 
@@ -158,8 +187,120 @@ void ObjectDetector::detectViaNcnn(cv::Mat &image,
   ex.extract("out0", out);
 
   std::vector<Object> proposals;
-  // generate_proposal(out, strides, in_pad, prob_threshold, proposals);
-  // std::cout << proposals.size() << std::endl;
+  const int num_class = 80;
+
+  for (int i = 0; i < out.w; i++) {
+    float cx = out.row(0)[i];
+    float cy = out.row(1)[i];
+    float bw = out.row(2)[i];
+    float bh = out.row(3)[i];
+
+    int label = -1;
+    float score = -FLT_MAX;
+    for (int k = 0; k < num_class; k++) {
+      float s = out.row(4 + k)[i];
+      if (s > score) {
+        score = s;
+        label = k;
+      }
+    }
+
+    if (score < prob_threshold)
+      continue;
+
+    // scale box back to original image coordinates
+    float x0 = (cx - bw * 0.5f - wpad / 2.0f) / scale;
+    float y0 = (cy - bh * 0.5f - wpad / 2.0f) / scale;
+    float x1 = (cx + bw * 0.5f - wpad / 2.0f) / scale;
+    float y1 = (cy + bh * 0.5f - wpad / 2.0f) / scale;
+
+    x0 = std::max(0.f, x0);
+    y0 = std::max(0.f, y0);
+    x1 = std::max((float)img_w, x1);
+    y1 = std::max((float)img_h, y1);
+
+    Object obj;
+    obj.rect = cv::Rect_<float>(x0, y0, x1 - x0, y1 - y0);
+    obj.label = label;
+    obj.prob = score;
+    proposals.push_back(obj);
+  }
+
+  std::sort(proposals.begin(), proposals.end(),
+            [](const Object &a, const Object &b) { return a.prob > b.prob; });
+
+  std::vector<int> picked;
+  nms_sorted_bboxes(proposals, picked, nms_threshold);
+
+  objects.resize(picked.size());
+  for (int i = 0; i < (int)picked.size(); i++)
+    objects[i] = proposals[picked[i]];
+}
+
+void ObjectDetector::draw_object(cv::Mat &image, std::vector<Object> &objects) {
+  static const std::vector<int> vehicle_classes = {2, 3, 5, 7};
+  static const char *class_names[] = {
+      "person",        "bicycle",      "car",
+      "motorcycle",    "airplane",     "bus",
+      "train",         "truck",        "boat",
+      "traffic light", "fire hydrant", "stop sign",
+      "parking meter", "bench",        "bird",
+      "cat",           "dog",          "horse",
+      "sheep",         "cow",          "elephant",
+      "bear",          "zebra",        "giraffe",
+      "backpack",      "umbrella",     "handbag",
+      "tie",           "suitcase",     "frisbee",
+      "skis",          "snowboard",    "sports ball",
+      "kite",          "baseball bat", "baseball glove",
+      "skateboard",    "surfboard",    "tennis racket",
+      "bottle",        "wine glass",   "cup",
+      "fork",          "knife",        "spoon",
+      "bowl",          "banana",       "apple",
+      "sandwich",      "orange",       "broccoli",
+      "carrot",        "hot dog",      "pizza",
+      "donut",         "cake",         "chair",
+      "couch",         "potted plant", "bed",
+      "dining table",  "toilet",       "tv",
+      "laptop",        "mouse",        "remote",
+      "keyboard",      "cell phone",   "microwave",
+      "oven",          "toaster",      "sink",
+      "refrigerator",  "book",         "clock",
+      "vase",          "scissors",     "teddy bear",
+      "hair drier",    "toothbrush",
+  };
+
+  std::map<int, cv::Scalar> colors = {
+      {2, cv::Scalar(0, 255, 0)},
+      {3, cv::Scalar(255, 0, 0)},
+      {5, cv::Scalar(0, 165, 255)},
+      {7, cv::Scalar(0, 0, 255)},
+  };
+
+  for (const Object &obj : objects) {
+
+    if (std::find(vehicle_classes.begin(), vehicle_classes.end(), obj.label) ==
+        vehicle_classes.end())
+      continue;
+
+    cv::Scalar color = colors[obj.label];
+    cv::rectangle(image, obj.rect, color, 2);
+
+    char text[64];
+    snprintf(text, sizeof(text), "%s %.1f%%", class_names[obj.label],
+             obj.prob * 100.f);
+
+    int baseline = 0;
+    cv::Size text_size =
+        cv::getTextSize(text, cv::FONT_HERSHEY_SIMPLEX, 0.5, 1, &baseline);
+    int x = obj.rect.x;
+    int y = obj.rect.y - 5;
+    y = std::max(y, text_size.height);
+
+    cv::rectangle(image, cv::Point(x, y - text_size.height),
+                  cv::Point(x + text_size.width, y + baseline), color, -1);
+    cv::putText(image, text, cv::Point(x, y), cv::FONT_HERSHEY_SIMPLEX, 0.5,
+                cv::Scalar(255, 255, 255), 1);
+  }
 }
 
 void ObjectDetector::detectViaCuda(cv::Mat &image,
@@ -243,119 +384,4 @@ std::vector<std::string> ObjectDetector::load_class_list() {
     coco_list.push_back(line);
 
   return coco_list;
-}
-
-void ObjectDetector::generate_proposal(const ncnn::Mat &pred, int stride,
-                                       const ncnn::Mat &in_pad,
-                                       float prob_threshold,
-                                       std::vector<Object> objects) {
-  const int w = in_pad.w;
-  const int h = in_pad.h;
-
-  const int num_grid_x = w / stride;
-  const int num_grid_y = h / stride;
-
-  const int reg_max_1 = 16;
-  const int num_class =
-      pred.w - reg_max_1 * 4; // number of classes. 80 for COCO
-
-  for (int y = 0; y < num_grid_y; y++) {
-    for (int x = 0; x < num_grid_x; x++) {
-      const ncnn::Mat pred_grid = pred.row_range(y * num_grid_x + x, 1);
-
-      // find label with max score
-      int label = -1;
-      float score = -FLT_MAX;
-      {
-        const ncnn::Mat pred_score = pred_grid.range(reg_max_1 * 4, num_class);
-
-        for (int k = 0; k < num_class; k++) {
-          float s = pred_score[k];
-          if (s > score) {
-            label = k;
-            score = s;
-          }
-        }
-
-        score = sigmoid(score);
-      }
-
-      if (score >= prob_threshold) {
-        ncnn::Mat pred_bbox =
-            pred_grid.range(0, reg_max_1 * 4).reshape(reg_max_1, 4);
-
-        {
-          ncnn::Layer *softmax = ncnn::create_layer("Softmax");
-
-          ncnn::ParamDict pd;
-          pd.set(0, 1); // axis
-          pd.set(1, 1);
-          softmax->load_param(pd);
-
-          ncnn::Option opt;
-          opt.num_threads = 1;
-          opt.use_packing_layout = false;
-
-          softmax->create_pipeline(opt);
-
-          softmax->forward_inplace(pred_bbox, opt);
-
-          softmax->destroy_pipeline(opt);
-
-          delete softmax;
-        }
-
-        float pred_ltrb[4];
-        for (int k = 0; k < 4; k++) {
-          float dis = 0.f;
-          const float *dis_after_sm = pred_bbox.row(k);
-          for (int l = 0; l < reg_max_1; l++) {
-            dis += l * dis_after_sm[l];
-          }
-
-          pred_ltrb[k] = dis * stride;
-        }
-
-        float pb_cx = (x + 0.5f) * stride;
-        float pb_cy = (y + 0.5f) * stride;
-
-        float x0 = pb_cx - pred_ltrb[0];
-        float y0 = pb_cy - pred_ltrb[1];
-        float x1 = pb_cx + pred_ltrb[2];
-        float y1 = pb_cy + pred_ltrb[3];
-
-        Object obj;
-        obj.rect.x = x0;
-        obj.rect.y = y0;
-        obj.rect.width = x1 - x0;
-        obj.rect.height = y1 - y0;
-        obj.label = label;
-        obj.prob = score;
-
-        objects.push_back(obj);
-      }
-    }
-  }
-}
-
-void ObjectDetector::generate_proposal(const ncnn::Mat &pred,
-                                       std::vector<int> &strides,
-                                       const ncnn::Mat &in_pad,
-                                       float prob_threshold,
-                                       std::vector<Object> &objects) {
-  const int w = in_pad.w;
-  const int h = in_pad.h;
-
-  int pred_row_offset = 0;
-  for (size_t i = 0; i < strides.size(); i++) {
-    const int stride = strides[i];
-
-    const int num_grid_x = w / stride;
-    const int num_grid_y = h / stride;
-    const int num_grid = num_grid_x * num_grid_y;
-
-    generate_proposal(pred.row_range(pred_row_offset, num_grid), stride, in_pad,
-                      prob_threshold, objects);
-    pred_row_offset += num_grid;
-  }
 }

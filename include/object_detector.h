@@ -16,8 +16,10 @@ struct ObjectDetector {
   void init();
 
   void detect(cv::Mat &image, std::vector<Object> &objects);
+  void draw_object(cv::Mat &image, std::vector<Object> &objects);
 
-  bool useCuda = true;
+  bool useCuda = false;
+  uint32_t yoloVersion = 11;
   Model model = Model::SM;
 
 private:
@@ -33,11 +35,4 @@ private:
 
   cv::dnn::Net loadCudeModel();
   void loadNcnnModel();
-
-  void generate_proposal(const ncnn::Mat &pred, int stride,
-                         const ncnn::Mat &in_pad, float prob_threshold,
-                         std::vector<Object> objects);
-  void generate_proposal(const ncnn::Mat &pred, std::vector<int> &strides,
-                         const ncnn::Mat &in_pad, float prob_threshold,
-                         std::vector<Object> &objects);
 };

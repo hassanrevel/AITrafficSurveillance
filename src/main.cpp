@@ -21,7 +21,6 @@ int main() {
   ObjectDetector det;
 
   det.useCuda = false;
-  det.model = Model::XL;
   det.init();
 
   sf::RenderWindow window(sf::VideoMode::getDesktopMode(),
@@ -39,7 +38,9 @@ int main() {
   sf::Clock deltaClock;
 
   // capture video
-  cv::VideoCapture cap(DATA_PATH "demo1.mp4", cv::CAP_GSTREAMER);
+
+  std::string path = DATA_PATH "demo1.mp4";
+  cv::VideoCapture cap(path, cv::CAP_GSTREAMER);
 
   cv::Mat frame;
 
@@ -49,6 +50,8 @@ int main() {
 
     if (frame.empty()) {
       cap.set(cv::CAP_PROP_POS_FRAMES, 0);
+      cap.release();
+      cap.open(path, cv::CAP_GSTREAMER);
       continue;
     }
 
@@ -56,7 +59,7 @@ int main() {
 
     det.detect(frame, objects);
 
-    // std::cout << "objects: " << objects.size() << std::endl;
+    det.draw_object(frame, objects);
 
     sf::Texture tex = matToTexture(frame);
 
